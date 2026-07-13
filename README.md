@@ -1,0 +1,60 @@
+# userscript-r4m — standalone browser build (getInfo + listing helpers)
+
+A Violentmonkey/Tampermonkey userscript generated from the single Postman source
+(`postman.package.js`). On every Route4Me/RouteML page it injects the helpers into the **page
+context** (postload `script#r4m-helpers` node), so the devtools console gets:
+
+- `getInfo({query})` — merged profile / session / config / magic-link info as aligned TSV
+- every listing helper (`users`, `vehicles`, `orders`, `addresses`, `routes`, `destinations`,
+  `facilities`, `regions`, `workflows`, …) with the normalized `{by_id, by_name, list, total}` shape
+- `from(data)` SQL-like builder, `one()/order()/customer()/address()/facility()`, `describe()`
+- the full export surface under `window.r4m.*` (bare globals are only promoted when the page
+  hasn't claimed the name — collisions are listed in the install log)
+
+## Build & test
+
+```sh
+npm run build:userscript    # postman.package.js + browser-bindings.js + page-attach.js -> r4m-helpers.user.js
+npm run test:userscript     # offline smoke test (stubbed browser + HTTP, real injection path)
+```
+
+No source rewriting: unlike the Insomnia build, the untouched package source runs against a `pm`
+shim ([browser-bindings.js](browser-bindings.js)) — `pm.sendRequest` is native `fetch`,
+`pm.collectionVariables/globals` are localStorage-backed (`r4m.cv` / `r4m.globals`), and
+`require()` resolves lodash/moment to the page's copy when present, else to the bundled Lite
+fallbacks.
+
+## Install / deploy
+
+- Install (Violentmonkey/Tampermonkey prompts automatically):
+  <https://raw.githubusercontent.com/r4m-alexs/r4m-userscripts/main/r4m-helpers.user.js>
+  — the same URL is the `@downloadURL/@updateURL`, so installed copies auto-update on push.
+- Local: open `r4m-helpers.user.js` in the browser or drag it into the Violentmonkey dashboard.
+- Deploy: `npm run deploy:userscript` — rebuilds, runs the smoke test, then commits and pushes
+  this directory (its own git repo) to `github.com/r4m-alexs/r4m-userscripts`. Bump `VERSION`
+  in `build-userscript-r4m.js` when publishing a change.
+
+## Auth & config
+
+**Session cookies only — the userscript build never uses a standalone api_key.** Every request
+goes out with `credentials: 'include'` (whatever account is logged into the page is who the
+helpers act as), and `Authorization` / `X-API-KEY` / `SECRET-KEY` headers are stripped at the
+transport layer — even an `api_key` argument passed to a helper never leaves the browser.
+There is no `r4m.auth()` and no vault: keys and secrets cannot be stored (`{{token}}` is pinned
+to a read-only sentinel), so no key material ever lands in page localStorage. Consequently
+`token()` / `authenticate()` are inert in this build — use Postman/Insomnia for those flows.
+
+`env` is auto-detected from the hostname (`*.routeml.com` → staging, everything else → prod);
+`?env=` in the page URL or `r4m.queryOverride('env', 'prod')` overrides (overrides apply on the
+next page load — the library reads `query` once at install). Debug curls:
+`r4m.queryOverride('debug', 'curl')`.
+
+## Limitations
+
+- Requests go straight from the page with cookies, so the API's CORS-with-credentials policy
+  applies (Route4Me's own frontends call the same hosts from go.\* pages; exotic origins may not).
+- Cross-env calls don't work: the browser session is per-domain, so on a prod page you query prod.
+- `read_csv`/`rows` are unavailable (csv-parse isn't bundled); `visualize()`/`.table()` fall back
+  to `console.table`.
+- moment falls back to a UTC-based Lite shim unless the page ships real moment — timestamps in
+  `group()`/`from().enrich()` output are formatted in UTC either way.
