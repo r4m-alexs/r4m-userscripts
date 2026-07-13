@@ -19,7 +19,7 @@ global.localStorage = {
 };
 global.location = { hostname: 'go.routeml.com', search: '?debug=', pathname: '/some/page', href: 'https://go.routeml.com/some/page' };
 global.document = {
-    cookie: 'session_id=abc123; jwt=eyJh.pay=load%3D; empty=',   // embedded '=' + url-encoding
+    cookie: 'session_id=abc123; jwt=eyJh.pay=load%3D; empty=; XSRF-TOKEN=xsrf%3Dtok123',   // embedded '=' + url-encoding
     querySelector: () => null,
     createElement: () => ({ id: '', type: '', textContent: '' }),
     body: { appendChild: () => {} }
@@ -74,7 +74,7 @@ const body = out.slice(out.indexOf('(function () {'));
     assert.ok(/member_email\)\tqa@route4me\.com/.test(info), 'getInfo merged profile fields');
     assert.ok(/admin_link\)\thttps:\/\/root\.admin-panel\.routeml\.com/.test(info), 'getInfo computed admin_link');
     // cookies split into name:value pairs — first '=' only (values may embed '='), url-decoded
-    assert.ok(info.includes('cookies)\t{session_id:abc123,jwt:eyJh.pay=load=,empty:}'), 'cookies string split properly: ' + (info.match(/^cookies\).*$/m) || [''])[0]);
+    assert.ok(info.includes('cookies)\t{session_id:abc123,jwt:eyJh.pay=load=,empty:,XSRF-TOKEN:xsrf=tok123}'), 'cookies string split properly: ' + (info.match(/^cookies\).*$/m) || [''])[0]);
 
     // the query filters ALL property names uniformly — no always-on keys
     const filtered = await window.getInfo({ query: 'member_id|member_api_key|member_email|qa_mode', log: false });
@@ -93,6 +93,15 @@ const body = out.slice(out.indexOf('(function () {'));
         for (const h of Object.keys(c.headers || {})) {
             assert.ok(!/^(authorization|x-api-key|secret-key)$/i.test(h), 'no auth header leaves the browser (' + h + ' on ' + c.url + ')');
         }
+    }
+    // CSRF: every non-GET echoes the page's XSRF-TOKEN cookie (Laravel 419 fix)
+    const posts = calls.filter((c) => !/^(GET|HEAD)$/.test(c.method));
+    assert.ok(posts.length > 0, 'POST requests were made (magic-login / facilities select)');
+    for (const c of posts) {
+        assert.strictEqual((c.headers || {})['X-XSRF-TOKEN'], 'xsrf=tok123', 'non-GET carries X-XSRF-TOKEN (' + c.url + ')');
+    }
+    for (const c of calls.filter((x) => /^(GET|HEAD)$/.test(x.method))) {
+        assert.strictEqual((c.headers || {})['X-XSRF-TOKEN'], undefined, 'GETs skip the CSRF header (' + c.url + ')');
     }
     assert.strictEqual(window.r4m.auth, undefined, 'no r4m.auth — standalone keys cannot be set');
     assert.strictEqual(window.r4m.vaultSet, undefined, 'no r4m.vaultSet — secrets cannot be seeded');

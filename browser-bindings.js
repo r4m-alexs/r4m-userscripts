@@ -58,6 +58,35 @@ try { if (!__gmxhr && typeof GM !== 'undefined' && GM && typeof GM.xmlHttpReques
 var __FORBIDDEN_HEADERS = /^(cookie|host|origin|referer|content-length|connection|accept-encoding|user-agent)$/i;
 var __AUTH_HEADERS = /^(authorization|x-api-key|secret-key)$/i;
 var __authStripNoted = false;
+
+// CSRF: with cookie-session auth the Laravel APIs 419 non-GET requests ("Expected CSRF token
+// not found") unless the token is echoed in a header. Sources, best first: the XSRF-TOKEN
+// cookie visible to the page (-> X-XSRF-TOKEN), the page's <meta name="csrf-token">
+// (-> X-CSRF-TOKEN), and Tampermonkey's GM_cookie for the TARGET domain's jar (Violentmonkey
+// has no GM_cookie). Both headers are sent when found; the server reads whichever it expects.
+var __csrfMissNoted = false;
+function __csrfHeaders(url, done) {
+    var out = {};
+    try {
+        var m = /(?:^|;\s*)XSRF-TOKEN=([^;]+)/.exec(document.cookie || '');
+        if (m) { try { out['X-XSRF-TOKEN'] = decodeURIComponent(m[1]); } catch (e) { out['X-XSRF-TOKEN'] = m[1]; } }
+    } catch (e) {}
+    try {
+        var meta = document.querySelector('meta[name="csrf-token"], meta[name="csrf_token"], meta[name="_token"]');
+        var tok = meta && (meta.content || meta.getAttribute('content'));
+        if (tok) out['X-CSRF-TOKEN'] = tok;
+    } catch (e) {}
+    try {
+        if (typeof GM_cookie !== 'undefined' && GM_cookie && typeof GM_cookie.list === 'function') {
+            return GM_cookie.list({ url: url, name: 'XSRF-TOKEN' }, function (cookies) {
+                var v = cookies && cookies[0] && cookies[0].value;
+                if (v) { try { out['X-XSRF-TOKEN'] = decodeURIComponent(v); } catch (e) { out['X-XSRF-TOKEN'] = v; } }
+                done(out);
+            });
+        }
+    } catch (e) {}
+    done(out);
+}
 function __sendRequest(options, cb) {
     try {
         var o = (typeof options === 'string') ? { url: options } : (options || {});
@@ -90,38 +119,50 @@ function __sendRequest(options, cb) {
         }
         var payload = (method === 'GET' || method === 'HEAD') ? undefined : body;
 
-        if (__gmxhr) {                                    // CORS-free path (extension-level request)
-            __gmxhr({
-                method: method, url: o.url, headers: headers, data: payload,
-                anonymous: false,                          // send the target domain's session cookies
-                onload: function (res) {
-                    cb(null, {
-                        code: res.status, status: res.statusText,
-                        text: function () { return res.responseText; },
-                        json: function () { try { return JSON.parse(res.responseText); } catch (e) { return {}; } },
-                        headers: { get: function (h) {
-                            var m = new RegExp('^' + String(h).replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + ':\\s*(.*)$', 'im').exec(res.responseHeaders || '');
-                            return m ? m[1].trim() : null;
-                        } }
-                    });
-                },
-                onerror: function (e) { cb(new Error((e && (e.error || e.message)) || 'GM_xmlhttpRequest error')); },
-                ontimeout: function () { cb(new Error('GM_xmlhttpRequest timeout')); }
-            });
-            return;
-        }
-        fetch(o.url, { method: method, headers: headers, body: payload, credentials: 'include' })
-            .then(function (res) {
-                return res.text().then(function (t) {
-                    cb(null, {
-                        code: res.status, status: res.statusText,
-                        text: function () { return t; },
-                        json: function () { try { return JSON.parse(t); } catch (e) { return {}; } },
-                        headers: { get: function (h) { return res.headers.get(h); } }
-                    });
+        var dispatch = function () {
+            if (__gmxhr) {                                // CORS-free path (extension-level request)
+                __gmxhr({
+                    method: method, url: o.url, headers: headers, data: payload,
+                    anonymous: false,                      // send the target domain's session cookies
+                    onload: function (res) {
+                        cb(null, {
+                            code: res.status, status: res.statusText,
+                            text: function () { return res.responseText; },
+                            json: function () { try { return JSON.parse(res.responseText); } catch (e) { return {}; } },
+                            headers: { get: function (h) {
+                                var m = new RegExp('^' + String(h).replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + ':\\s*(.*)$', 'im').exec(res.responseHeaders || '');
+                                return m ? m[1].trim() : null;
+                            } }
+                        });
+                    },
+                    onerror: function (e) { cb(new Error((e && (e.error || e.message)) || 'GM_xmlhttpRequest error')); },
+                    ontimeout: function () { cb(new Error('GM_xmlhttpRequest timeout')); }
                 });
-            })
-            .catch(function (err) { cb(err); });
+                return;
+            }
+            fetch(o.url, { method: method, headers: headers, body: payload, credentials: 'include' })
+                .then(function (res) {
+                    return res.text().then(function (t) {
+                        cb(null, {
+                            code: res.status, status: res.statusText,
+                            text: function () { return t; },
+                            json: function () { try { return JSON.parse(t); } catch (e) { return {}; } },
+                            headers: { get: function (h) { return res.headers.get(h); } }
+                        });
+                    });
+                })
+                .catch(function (err) { cb(err); });
+        };
+
+        if (method === 'GET' || method === 'HEAD') return dispatch();
+        __csrfHeaders(o.url, function (csrf) {            // cookie-session POSTs need the token echoed
+            for (var h in csrf) { if (headers[h] == null) headers[h] = csrf[h]; }
+            if (!csrf['X-XSRF-TOKEN'] && !csrf['X-CSRF-TOKEN'] && !__csrfMissNoted) {
+                __csrfMissNoted = true;
+                console.warn('r4m: no CSRF token found on this page (XSRF-TOKEN cookie / csrf-token meta) — the API may reject non-GET requests with 419');
+            }
+            dispatch();
+        });
     } catch (err) { cb(err); }
 }
 
