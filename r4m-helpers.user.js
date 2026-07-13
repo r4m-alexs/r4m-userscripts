@@ -24,7 +24,7 @@
 // @updateURL   https://raw.githubusercontent.com/r4m-alexs/r4m-userscripts/main/r4m-helpers.user.js
 // @grant       none
 // @noframes
-// @version     1.2.0
+// @version     1.2.1
 // @author      -
 // ==/UserScript==
 
@@ -3491,6 +3491,21 @@ const _compact = (v) => {
 // — fn(url) may return the object (or a Promise of it) for a custom browser/extension context.
 let domainStateReader = null;
 const setDomainStateReader = (fn) => { domainStateReader = (typeof fn === 'function') ? fn : null; };
+// "a=1; b=2" -> {a:'1', b:'2'}. Pairs split on the FIRST '=' only — cookie values may embed '='
+// (base64, JWTs); values are url-decoded when possible.
+const _parseCookies = (str) => {
+    let out = {};
+    String(str || '').split(';').forEach(pair => {
+        pair = pair.trim();
+        if (!pair) return;
+        let i = pair.indexOf('=');
+        let name = (i === -1 ? pair : pair.slice(0, i)).trim();
+        let value = i === -1 ? '' : pair.slice(i + 1).trim();
+        try { value = decodeURIComponent(value); } catch (e) {}
+        out[name] = value;
+    });
+    return out;
+};
 const _domainState = (url) => new Promise((resolve) => {
     if (domainStateReader) {
         try { return Promise.resolve(domainStateReader(url)).then(resolve, () => resolve({ cookies: '(reader error)', localstorage_keys: null })); }
@@ -3507,13 +3522,13 @@ const _domainState = (url) => new Promise((resolve) => {
     // cookies — browser: document.cookie; Postman: cookie jar; else note
     try {
         if (typeof document !== 'undefined' && typeof document.cookie === 'string') {
-            out.cookies = document.cookie || '(none)';
+            out.cookies = document.cookie ? _parseCookies(document.cookie) : '(none)';
             return resolve(out);
         }
         let jar = pm.cookies && pm.cookies.jar && pm.cookies.jar();
         if (jar && typeof jar.getAll === 'function' && url) {
             return jar.getAll(url, (err, cookies) => {
-                out.cookies = (!err && cookies && cookies.length) ? cookies.map(c => c.name + '=' + c.value).join('; ') : (err ? '(' + (err.message || err) + ')' : '(none)');
+                out.cookies = (!err && cookies && cookies.length) ? Object.fromEntries(cookies.map(c => [c.name, c.value])) : (err ? '(' + (err.message || err) + ')' : '(none)');
                 resolve(out);
             });
         }
@@ -4217,7 +4232,7 @@ module.exports = {
 }
 
 
-module.exports.__userscript = '1.2.0';
+module.exports.__userscript = '1.2.1';
 // page-attach.js — runs after the library populated module.exports (inside the injected page fn).
 // Exposes window.r4m (full export surface) and promotes getInfo + the listing helpers to bare
 // globals when the page hasn't claimed the name.

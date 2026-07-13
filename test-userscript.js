@@ -20,6 +20,7 @@ global.localStorage = {
 global.location = { hostname: 'go.routeml.com', search: '?debug=', pathname: '/some/page', href: 'https://go.routeml.com/some/page' };
 let injected = null;
 global.document = {
+    cookie: 'session_id=abc123; jwt=eyJh.pay=load%3D; empty=',   // embedded '=' + url-encoding
     querySelector: () => null,
     createElement: () => ({ id: '', type: '', textContent: '' }),
     body: { appendChild: (n) => { injected = n.textContent; (0, eval)(n.textContent); } }
@@ -73,6 +74,8 @@ const body = out.slice(out.indexOf('(function () {'));
     assert.ok(/^env\)\tSTAGING/m.test(info), 'getInfo reports env');
     assert.ok(/member_email\)\tqa@route4me\.com/.test(info), 'getInfo merged profile fields');
     assert.ok(/admin_link\)\thttps:\/\/root\.admin-panel\.routeml\.com/.test(info), 'getInfo computed admin_link');
+    // cookies split into name:value pairs — first '=' only (values may embed '='), url-decoded
+    assert.ok(info.includes('cookies)\t{session_id:abc123,jwt:eyJh.pay=load=,empty:}'), 'cookies string split properly: ' + (info.match(/^cookies\).*$/m) || [''])[0]);
 
     // --- auth policy: session cookies only, standalone api_key impossible ---------------------
     assert.ok(calls.length > 0, 'requests were made');
