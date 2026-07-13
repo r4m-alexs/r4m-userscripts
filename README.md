@@ -38,9 +38,10 @@ fallbacks.
 
 ## Auth & config
 
-**Session cookies only — the userscript build never uses a standalone api_key.** Every request
-goes out with `credentials: 'include'` (whatever account is logged into the page is who the
-helpers act as), and `Authorization` / `X-API-KEY` / `SECRET-KEY` headers are stripped at the
+**Session cookies only — the userscript build never uses a standalone api_key.** Requests go
+through `GM_xmlhttpRequest` (extension-level, **not subject to the page's CORS policy**), which
+sends the target domain's session cookies from the browser jar — whoever is logged in is who
+the helpers act as. `Authorization` / `X-API-KEY` / `SECRET-KEY` headers are stripped at the
 transport layer — even an `api_key` argument passed to a helper never leaves the browser.
 There is no `r4m.auth()` and no vault: keys and secrets cannot be stored (`{{token}}` is pinned
 to a read-only sentinel), so no key material ever lands in page localStorage. The token-auth
@@ -54,9 +55,11 @@ next page load — the library reads `query` once at install). Debug curls:
 
 ## Limitations
 
-- Requests go straight from the page with cookies, so the API's CORS-with-credentials policy
-  applies (Route4Me's own frontends call the same hosts from go.\* pages; exotic origins may not).
-- Cross-env calls don't work: the browser session is per-domain, so on a prod page you query prod.
+- Requires a manager with `GM_xmlhttpRequest` (Violentmonkey/Tampermonkey — granted in the
+  metadata; Tampermonkey scopes it via `@connect route4me.com/routeml.com/googleapis.com`).
+  Without it the code falls back to page `fetch`, which the API's CORS policy will likely block.
+- Cookies are per target domain: querying staging from a prod page works only if the browser is
+  also logged into staging (and vice versa).
 - `read_csv`/`rows` are unavailable (csv-parse isn't bundled); `visualize()`/`.table()` fall back
   to `console.table`.
 - moment falls back to a UTC-based Lite shim unless the page ships real moment — timestamps in

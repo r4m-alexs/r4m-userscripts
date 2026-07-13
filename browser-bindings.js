@@ -5,7 +5,8 @@
 // stripped at the transport layer, so even an explicitly passed key never leaves the browser,
 // and {{token}} is pinned to a read-only sentinel (set/unset are no-ops) so nothing can store one.
 // What exists here and why:
-//   pm.sendRequest      — native `fetch` shaped to Postman's callback API; session-cookie auth,
+//   pm.sendRequest      — GM_xmlhttpRequest (CORS-free, extension-level) shaped to Postman's
+//                         callback API, falling back to same-realm fetch; session-cookie auth,
 //                         auth headers dropped (see policy above), forbidden headers dropped.
 //   pm.collectionVariables / globals / environment — localStorage-backed stores (features cache
 //                         etc. survive reloads); 'token' is the session sentinel, not writable.
@@ -44,10 +45,16 @@ function __store(nsKey) {
     };
 }
 
-// --- native fetch, shaped like pm.sendRequest's callback API the library consumes downstream ----
-// (resp.code / resp.text() / resp.json() / resp.headers.get()). Body text is pre-read so the
-// downstream sync .text()/.json() calls work unchanged. Auth = the browser session cookies
-// (credentials:'include'); auth headers are STRIPPED so no standalone key can ever be sent.
+// --- transport, shaped like pm.sendRequest's callback API the library consumes downstream ------
+// (resp.code / resp.text() / resp.json() / resp.headers.get()).
+// Primary: GM_xmlhttpRequest — the userscript manager performs the request at extension level,
+// so it is NOT subject to the page's CORS policy and it sends the TARGET domain's cookies from
+// the browser jar (the session auth). Fallback: same-realm fetch with credentials:'include'
+// (CORS applies — that path only exists for managers without GM_xmlhttpRequest and for tests).
+// Auth headers are STRIPPED either way so no standalone key can ever be sent.
+var __gmxhr = null;
+try { if (typeof GM_xmlhttpRequest === 'function') __gmxhr = GM_xmlhttpRequest; } catch (e) {}
+try { if (!__gmxhr && typeof GM !== 'undefined' && GM && typeof GM.xmlHttpRequest === 'function') __gmxhr = GM.xmlHttpRequest; } catch (e) {}
 var __FORBIDDEN_HEADERS = /^(cookie|host|origin|referer|content-length|connection|accept-encoding|user-agent)$/i;
 var __AUTH_HEADERS = /^(authorization|x-api-key|secret-key)$/i;
 var __authStripNoted = false;
@@ -81,7 +88,29 @@ function __sendRequest(options, cb) {
                 delete headers['Content-Type']; delete headers['content-type'];   // browser sets the multipart boundary
             } else if (typeof o.body === 'string') body = o.body;
         }
-        fetch(o.url, { method: method, headers: headers, body: (method === 'GET' || method === 'HEAD') ? undefined : body, credentials: 'include' })
+        var payload = (method === 'GET' || method === 'HEAD') ? undefined : body;
+
+        if (__gmxhr) {                                    // CORS-free path (extension-level request)
+            __gmxhr({
+                method: method, url: o.url, headers: headers, data: payload,
+                anonymous: false,                          // send the target domain's session cookies
+                onload: function (res) {
+                    cb(null, {
+                        code: res.status, status: res.statusText,
+                        text: function () { return res.responseText; },
+                        json: function () { try { return JSON.parse(res.responseText); } catch (e) { return {}; } },
+                        headers: { get: function (h) {
+                            var m = new RegExp('^' + String(h).replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + ':\\s*(.*)$', 'im').exec(res.responseHeaders || '');
+                            return m ? m[1].trim() : null;
+                        } }
+                    });
+                },
+                onerror: function (e) { cb(new Error((e && (e.error || e.message)) || 'GM_xmlhttpRequest error')); },
+                ontimeout: function () { cb(new Error('GM_xmlhttpRequest timeout')); }
+            });
+            return;
+        }
+        fetch(o.url, { method: method, headers: headers, body: payload, credentials: 'include' })
             .then(function (res) {
                 return res.text().then(function (t) {
                     cb(null, {

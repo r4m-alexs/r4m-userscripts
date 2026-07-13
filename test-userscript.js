@@ -1,9 +1,9 @@
 #!/usr/bin/env node
 // Offline smoke test for the generated userscript (r4m-helpers.user.js).
-// Stubs the browser surface (window/document/localStorage/fetch), runs the userscript body
-// through the REAL injection path (script node -> eval of textContent), then drives a listing
-// helper and getInfo end-to-end against canned responses — and asserts the auth policy:
-// session cookies only, no standalone api_key can be sent or stored.
+// Stubs the browser surface (window/document/localStorage/GM_xmlhttpRequest), runs the
+// userscript body, then drives a listing helper and getInfo end-to-end against canned
+// responses — asserting the transport policy (all HTTP via GM_xmlhttpRequest, never the
+// CORS-bound fetch fallback) and the auth policy (session cookies only, no standalone api_key).
 const fs = require('fs');
 const path = require('path');
 const assert = require('assert');
@@ -18,33 +18,34 @@ global.localStorage = {
     get length() { return store.size; }
 };
 global.location = { hostname: 'go.routeml.com', search: '?debug=', pathname: '/some/page', href: 'https://go.routeml.com/some/page' };
-let injected = null;
 global.document = {
     cookie: 'session_id=abc123; jwt=eyJh.pay=load%3D; empty=',   // embedded '=' + url-encoding
     querySelector: () => null,
     createElement: () => ({ id: '', type: '', textContent: '' }),
-    body: { appendChild: (n) => { injected = n.textContent; (0, eval)(n.textContent); } }
+    body: { appendChild: () => {} }
 };
 global.window = global;
 global.FormData = class { append() {} };
 global.Blob = class { constructor() {} };
 
+// all HTTP must go through GM_xmlhttpRequest (the CORS-free path) — fetch is the page-realm
+// fallback and would be CORS-blocked in the real browser, so here it hard-fails the test
 const calls = [];
-global.fetch = async (url, opts = {}) => {
-    calls.push({ url, opts });
+global.fetch = async (url) => { throw new Error('CORS: fetch fallback must not be used (' + url + ')'); };
+global.GM_xmlhttpRequest = (req) => {
+    calls.push(req);
     let json = {};
+    const url = req.url;
     if (/profile-api/.test(url)) json = { member_id: 42, member_email: 'qa@route4me.com', root_member_id: 42, timezone: 'UTC' };
     else if (/validate_session/.test(url)) json = { member_id: 42, member_email: 'qa@route4me.com' };
     else if (/configuration-settings/.test(url)) json = { OWNER_MEMBER_ID: 42 };
     else if (/facilities\/select/.test(url)) json = { status: true };
     else if (/combined|list/.test(url)) json = { data: { items: [{ member_id: 42, member_email: 'qa@route4me.com' }], total_items_count: 1 } };
-    const text = JSON.stringify(json);
-    return {
+    setTimeout(() => req.onload({
         status: 200, statusText: 'OK',
-        text: async () => text,
-        json: async () => JSON.parse(text),
-        headers: { get: (h) => (/content-type/i.test(h) ? 'application/json' : null) }
-    };
+        responseText: JSON.stringify(json),
+        responseHeaders: 'Content-Type: application/json\r\nX-Test: 1'
+    }), 0);
 };
 
 // --- run the userscript body (metadata stripped) ---------------------------------------------
@@ -53,8 +54,6 @@ const body = out.slice(out.indexOf('(function () {'));
 (0, eval)(body);
 
 (async () => {
-    // installed via the script-node injection path, into "page" context
-    assert.ok(injected, 'script node was injected');
     assert.ok(window.r4m, 'window.r4m exists');
     assert.strictEqual(typeof window.r4m.getInfo, 'function', 'r4m.getInfo is a function');
     assert.strictEqual(typeof window.getInfo, 'function', 'getInfo promoted to a bare global');
@@ -77,11 +76,11 @@ const body = out.slice(out.indexOf('(function () {'));
     // cookies split into name:value pairs — first '=' only (values may embed '='), url-decoded
     assert.ok(info.includes('cookies)\t{session_id:abc123,jwt:eyJh.pay=load=,empty:}'), 'cookies string split properly: ' + (info.match(/^cookies\).*$/m) || [''])[0]);
 
-    // --- auth policy: session cookies only, standalone api_key impossible ---------------------
+    // --- transport & auth policy: GM_xmlhttpRequest with cookies, standalone api_key impossible --
     assert.ok(calls.length > 0, 'requests were made');
     for (const c of calls) {
-        assert.strictEqual(c.opts.credentials, 'include', 'every request sends the browser session cookies');
-        for (const h of Object.keys(c.opts.headers || {})) {
+        assert.strictEqual(c.anonymous, false, 'every request sends the target-domain session cookies');
+        for (const h of Object.keys(c.headers || {})) {
             assert.ok(!/^(authorization|x-api-key|secret-key)$/i.test(h), 'no auth header leaves the browser (' + h + ' on ' + c.url + ')');
         }
     }
@@ -99,9 +98,9 @@ const body = out.slice(out.indexOf('(function () {'));
     const before = calls.length;
     await window.users({ api_key: 'ffffffffffffffffffffffffffffffff' });
     for (const c of calls.slice(before)) {
-        const joined = JSON.stringify(c.opts.headers || {});
+        const joined = JSON.stringify(c.headers || {});
         assert.ok(!joined.includes('ffffffffffffffffffffffffffffffff'), 'explicit api_key argument is stripped at the transport layer');
     }
 
-    console.log(`✓ userscript smoke test passed (${calls.length} stubbed HTTP calls, session-cookie auth only)`);
+    console.log(`✓ userscript smoke test passed (${calls.length} GM_xmlhttpRequest calls, CORS-free, session-cookie auth only)`);
 })().catch((e) => { console.error('✗ ' + (e.stack || e)); process.exit(1); });

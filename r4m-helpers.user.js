@@ -22,9 +22,13 @@
 // @exclude     https://root.staging-admin-panel.route4me.com/*
 // @downloadURL https://raw.githubusercontent.com/r4m-alexs/r4m-userscripts/main/r4m-helpers.user.js
 // @updateURL   https://raw.githubusercontent.com/r4m-alexs/r4m-userscripts/main/r4m-helpers.user.js
-// @grant       none
+// @grant       GM_xmlhttpRequest
+// @grant       GM.xmlHttpRequest
+// @connect     route4me.com
+// @connect     routeml.com
+// @connect     googleapis.com
 // @noframes
-// @version     1.2.1
+// @version     1.3.0
 // @author      -
 // ==/UserScript==
 
@@ -43,7 +47,8 @@ if (window.r4m && window.r4m.__userscript) return;   // already installed on thi
 // stripped at the transport layer, so even an explicitly passed key never leaves the browser,
 // and {{token}} is pinned to a read-only sentinel (set/unset are no-ops) so nothing can store one.
 // What exists here and why:
-//   pm.sendRequest      — native `fetch` shaped to Postman's callback API; session-cookie auth,
+//   pm.sendRequest      — GM_xmlhttpRequest (CORS-free, extension-level) shaped to Postman's
+//                         callback API, falling back to same-realm fetch; session-cookie auth,
 //                         auth headers dropped (see policy above), forbidden headers dropped.
 //   pm.collectionVariables / globals / environment — localStorage-backed stores (features cache
 //                         etc. survive reloads); 'token' is the session sentinel, not writable.
@@ -82,10 +87,16 @@ function __store(nsKey) {
     };
 }
 
-// --- native fetch, shaped like pm.sendRequest's callback API the library consumes downstream ----
-// (resp.code / resp.text() / resp.json() / resp.headers.get()). Body text is pre-read so the
-// downstream sync .text()/.json() calls work unchanged. Auth = the browser session cookies
-// (credentials:'include'); auth headers are STRIPPED so no standalone key can ever be sent.
+// --- transport, shaped like pm.sendRequest's callback API the library consumes downstream ------
+// (resp.code / resp.text() / resp.json() / resp.headers.get()).
+// Primary: GM_xmlhttpRequest — the userscript manager performs the request at extension level,
+// so it is NOT subject to the page's CORS policy and it sends the TARGET domain's cookies from
+// the browser jar (the session auth). Fallback: same-realm fetch with credentials:'include'
+// (CORS applies — that path only exists for managers without GM_xmlhttpRequest and for tests).
+// Auth headers are STRIPPED either way so no standalone key can ever be sent.
+var __gmxhr = null;
+try { if (typeof GM_xmlhttpRequest === 'function') __gmxhr = GM_xmlhttpRequest; } catch (e) {}
+try { if (!__gmxhr && typeof GM !== 'undefined' && GM && typeof GM.xmlHttpRequest === 'function') __gmxhr = GM.xmlHttpRequest; } catch (e) {}
 var __FORBIDDEN_HEADERS = /^(cookie|host|origin|referer|content-length|connection|accept-encoding|user-agent)$/i;
 var __AUTH_HEADERS = /^(authorization|x-api-key|secret-key)$/i;
 var __authStripNoted = false;
@@ -119,7 +130,29 @@ function __sendRequest(options, cb) {
                 delete headers['Content-Type']; delete headers['content-type'];   // browser sets the multipart boundary
             } else if (typeof o.body === 'string') body = o.body;
         }
-        fetch(o.url, { method: method, headers: headers, body: (method === 'GET' || method === 'HEAD') ? undefined : body, credentials: 'include' })
+        var payload = (method === 'GET' || method === 'HEAD') ? undefined : body;
+
+        if (__gmxhr) {                                    // CORS-free path (extension-level request)
+            __gmxhr({
+                method: method, url: o.url, headers: headers, data: payload,
+                anonymous: false,                          // send the target domain's session cookies
+                onload: function (res) {
+                    cb(null, {
+                        code: res.status, status: res.statusText,
+                        text: function () { return res.responseText; },
+                        json: function () { try { return JSON.parse(res.responseText); } catch (e) { return {}; } },
+                        headers: { get: function (h) {
+                            var m = new RegExp('^' + String(h).replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + ':\\s*(.*)$', 'im').exec(res.responseHeaders || '');
+                            return m ? m[1].trim() : null;
+                        } }
+                    });
+                },
+                onerror: function (e) { cb(new Error((e && (e.error || e.message)) || 'GM_xmlhttpRequest error')); },
+                ontimeout: function () { cb(new Error('GM_xmlhttpRequest timeout')); }
+            });
+            return;
+        }
+        fetch(o.url, { method: method, headers: headers, body: payload, credentials: 'include' })
             .then(function (res) {
                 return res.text().then(function (t) {
                     cb(null, {
@@ -4232,7 +4265,7 @@ module.exports = {
 }
 
 
-module.exports.__userscript = '1.2.1';
+module.exports.__userscript = '1.3.0';
 // page-attach.js — runs after the library populated module.exports (inside the injected page fn).
 // Exposes window.r4m (full export surface) and promotes getInfo + the listing helpers to bare
 // globals when the page hasn't claimed the name.
@@ -4255,7 +4288,12 @@ r4m.queryOverride = function (k, v) {
 };
 r4m.pm = pm;   // escape hatch: the store shims (globals, query overrides)
 
-window.r4m = r4m;
+// attach to the REAL page window (unsafeWindow) so the devtools console sees the helpers even
+// when the manager runs the script in a sandbox; window covers page-realm execution and tests.
+var W = window;
+try { if (typeof unsafeWindow !== 'undefined' && unsafeWindow) W = unsafeWindow; } catch (e) {}
+W.r4m = r4m;
+if (W !== window) window.r4m = r4m;
 
 // bare-global promotion: getInfo + every listing helper (+ their one()/describe conveniences).
 // A name already used by the page is skipped — it's still reachable as r4m.<name>.
@@ -4273,7 +4311,7 @@ var PROMOTE = [
 var skipped = [];
 PROMOTE.forEach(function (n) {
     if (typeof r4m[n] !== 'function') return;
-    if (window[n] === undefined) window[n] = r4m[n]; else skipped.push(n);
+    if (W[n] === undefined) W[n] = r4m[n]; else skipped.push(n);
 });
 
 console.info('r4m ready [' + __params().env.toUpperCase() + '] — auth = your logged-in browser session. Try: await getInfo()  |  await users()  |  r4m.*');
@@ -4281,16 +4319,8 @@ if (skipped.length) console.info('r4m: page already defines ' + skipped.join(', 
 
 }
 
-// postload injection — the helpers must live in the PAGE context (usable from devtools console)
-if (!document.querySelector('script#r4m-helpers')) {
-    try {
-        var s = document.createElement('script');
-        s.id = 'r4m-helpers';
-        s.type = 'text/javascript';
-        s.textContent = '(' + __r4m_main.toString() + ')();';
-        (document.body || document.documentElement).appendChild(s);
-    } catch (e) {}
-}
-// CSP fallback: with @grant none this scope IS the page window in most managers
-try { if (!window.r4m) __r4m_main(); } catch (e) { console.error('r4m userscript failed to install: ' + (e.stack || e)); }
+// Runs directly in the userscript scope: GM_xmlhttpRequest (the CORS-free transport) is only
+// visible here, not inside an injected script node. page-attach puts the helpers on
+// unsafeWindow/window, so the devtools console can still call getInfo()/users()/r4m.*.
+try { __r4m_main(); } catch (e) { console.error('r4m userscript failed to install: ' + (e.stack || e)); }
 })();

@@ -20,7 +20,12 @@ r4m.queryOverride = function (k, v) {
 };
 r4m.pm = pm;   // escape hatch: the store shims (globals, query overrides)
 
-window.r4m = r4m;
+// attach to the REAL page window (unsafeWindow) so the devtools console sees the helpers even
+// when the manager runs the script in a sandbox; window covers page-realm execution and tests.
+var W = window;
+try { if (typeof unsafeWindow !== 'undefined' && unsafeWindow) W = unsafeWindow; } catch (e) {}
+W.r4m = r4m;
+if (W !== window) window.r4m = r4m;
 
 // bare-global promotion: getInfo + every listing helper (+ their one()/describe conveniences).
 // A name already used by the page is skipped — it's still reachable as r4m.<name>.
@@ -38,7 +43,7 @@ var PROMOTE = [
 var skipped = [];
 PROMOTE.forEach(function (n) {
     if (typeof r4m[n] !== 'function') return;
-    if (window[n] === undefined) window[n] = r4m[n]; else skipped.push(n);
+    if (W[n] === undefined) W[n] = r4m[n]; else skipped.push(n);
 });
 
 console.info('r4m ready [' + __params().env.toUpperCase() + '] — auth = your logged-in browser session. Try: await getInfo()  |  await users()  |  r4m.*');
