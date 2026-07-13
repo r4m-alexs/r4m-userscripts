@@ -24,7 +24,7 @@
 // @updateURL   https://raw.githubusercontent.com/r4m-alexs/r4m-userscripts/main/r4m-helpers.user.js
 // @grant       none
 // @noframes
-// @version     1.1.0
+// @version     1.2.0
 // @author      -
 // ==/UserScript==
 
@@ -4217,7 +4217,7 @@ module.exports = {
 }
 
 
-module.exports.__userscript = '1.1.0';
+module.exports.__userscript = '1.2.0';
 // page-attach.js — runs after the library populated module.exports (inside the injected page fn).
 // Exposes window.r4m (full export surface) and promotes getInfo + the listing helpers to bare
 // globals when the page hasn't claimed the name.
@@ -4226,6 +4226,11 @@ module.exports.__userscript = '1.1.0';
 // Browser-only convenience:
 //   r4m.queryOverride(k, v)  persist a query override (env/debug/member_id…) — applies on reload
 var r4m = module.exports;
+
+// token auth does not exist in the userscript build — session cookies only. These exports are
+// inert here anyway (vault is always empty, auth headers are stripped), so drop them entirely
+// rather than expose dead surface.
+['token', 'authenticate', 'clearAuth', 'vault'].forEach(function (n) { delete r4m[n]; });
 
 r4m.queryOverride = function (k, v) {
     var o; try { o = JSON.parse(localStorage.getItem('r4m.query') || '{}'); } catch (e) { o = {}; }

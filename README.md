@@ -41,8 +41,9 @@ goes out with `credentials: 'include'` (whatever account is logged into the page
 helpers act as), and `Authorization` / `X-API-KEY` / `SECRET-KEY` headers are stripped at the
 transport layer — even an `api_key` argument passed to a helper never leaves the browser.
 There is no `r4m.auth()` and no vault: keys and secrets cannot be stored (`{{token}}` is pinned
-to a read-only sentinel), so no key material ever lands in page localStorage. Consequently
-`token()` / `authenticate()` are inert in this build — use Postman/Insomnia for those flows.
+to a read-only sentinel), so no key material ever lands in page localStorage. The token-auth
+exports (`token`, `authenticate`, `clearAuth`, `vault`) are removed from this build entirely —
+use Postman/Insomnia for those flows.
 
 `env` is auto-detected from the hostname (`*.routeml.com` → staging, everything else → prod);
 `?env=` in the page URL or `r4m.queryOverride('env', 'prod')` overrides (overrides apply on the

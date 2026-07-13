@@ -7,6 +7,11 @@
 //   r4m.queryOverride(k, v)  persist a query override (env/debug/member_id…) — applies on reload
 var r4m = module.exports;
 
+// token auth does not exist in the userscript build — session cookies only. These exports are
+// inert here anyway (vault is always empty, auth headers are stripped), so drop them entirely
+// rather than expose dead surface.
+['token', 'authenticate', 'clearAuth', 'vault'].forEach(function (n) { delete r4m[n]; });
+
 r4m.queryOverride = function (k, v) {
     var o; try { o = JSON.parse(localStorage.getItem('r4m.query') || '{}'); } catch (e) { o = {}; }
     if (v == null) delete o[k]; else o[k] = String(v);

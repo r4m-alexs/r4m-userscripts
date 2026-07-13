@@ -84,6 +84,10 @@ const body = out.slice(out.indexOf('(function () {'));
     }
     assert.strictEqual(window.r4m.auth, undefined, 'no r4m.auth — standalone keys cannot be set');
     assert.strictEqual(window.r4m.vaultSet, undefined, 'no r4m.vaultSet — secrets cannot be seeded');
+    for (const n of ['token', 'authenticate', 'clearAuth', 'vault']) {
+        assert.strictEqual(window.r4m[n], undefined, 'token-auth surface removed from exports (' + n + ')');
+        assert.strictEqual(window[n], undefined, 'token-auth surface not promoted to a global (' + n + ')');
+    }
     window.r4m.pm.collectionVariables.set('token', 'ffffffffffffffffffffffffffffffff');
     assert.strictEqual(window.r4m.pm.collectionVariables.get('token'), '(browser-session)', '{{token}} is pinned to the session sentinel');
     assert.ok(!(localStorage.getItem('r4m.cv') || '').includes('ffff'), 'no key material persisted to localStorage');
