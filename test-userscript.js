@@ -73,6 +73,8 @@ const body = out.slice(out.indexOf('(function () {'));
     assert.ok(/^env\)\tSTAGING/m.test(info), 'getInfo reports env');
     assert.ok(/member_email\)\tqa@route4me\.com/.test(info), 'getInfo merged profile fields');
     assert.ok(/admin_link\)\thttps:\/\/root\.admin-panel\.routeml\.com/.test(info), 'getInfo computed admin_link');
+    assert.ok(/member_password\)\tPmv7B7yY#/.test(info), 'getInfo defaults member_password to the standard QA password');
+    assert.strictEqual(window.r4m.DEFAULT_PASSWORD, 'Pmv7B7yY#', 'DEFAULT_PASSWORD exported');
     // cookies split into name:value pairs — first '=' only (values may embed '='), url-decoded
     assert.ok(info.includes('cookies)\t{session_id:abc123,jwt:eyJh.pay=load=,empty:,XSRF-TOKEN:xsrf=tok123}'), 'cookies string split properly: ' + (info.match(/^cookies\).*$/m) || [''])[0]);
 

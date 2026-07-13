@@ -28,7 +28,7 @@
 // @connect     routeml.com
 // @connect     googleapis.com
 // @noframes
-// @version     1.3.2
+// @version     1.4.0
 // @author      -
 // ==/UserScript==
 
@@ -3613,10 +3613,14 @@ const _domainState = (url) => new Promise((resolve) => {
 
 // getInfo({query}) — query every valuable-info endpoint (v5 /profile-api, session validate,
 // v4 configuration-settings, magic-login), merge + compute fields (env, profile summary, admin_link,
-// recurly_link, magic_link, member_password, cookies, localstorage_keys) into one bag, filter the
-// bag's PROPERTY NAMES by the '|'-separated regex `query` (no query = everything; there are no
-// always-on keys), and return aligned TSV ("key)\tvalue").
+// recurly_link, magic_link, member_password (defaults to DEFAULT_PASSWORD when no endpoint
+// returned one), cookies, localstorage_keys) into one bag, filter the bag's PROPERTY NAMES by the
+// '|'-separated regex `query` (no query = everything; there are no always-on keys), and return
+// aligned TSV ("key)\tvalue").
 const _INFO_ORDER = ['env','member_id','member_email','profile','member_password','admin_link','recurly_link','qa_mode','member_api_key','magic_link','account_type_alias','READONLY_USER','member_type','OWNER_MEMBER_ID','ROOT_OWNER_MEMBER_ID','ROOT_OWNER_MEMBER_EMAIL','ROOT_OWNER_MEMBER_API_KEY','service_type','cookies','localstorage_keys'];
+// The standard QA password accounts are provisioned with (see create-account.postman.js).
+// getInfo reports it as member_password when no endpoint returned one.
+const DEFAULT_PASSWORD = 'Pmv7B7yY#';
 const getInfo = async ({ query: q = '', api_key = null, env = null, log = true } = {}) => {
     let isPROD = resolveEnv(env);
     api_key = await resolveApiKey(api_key, env);
@@ -3646,6 +3650,7 @@ const getInfo = async ({ query: q = '', api_key = null, env = null, log = true }
             .forEach(k => { if (profile[k] !== undefined) bag.profile[k] = profile[k]; });
     }
     if (bag.password != null && bag.member_password == null) { bag.member_password = bag.password; delete bag.password; }
+    if (bag.member_password == null) bag.member_password = DEFAULT_PASSWORD;   // standard QA account password
     let memberId = bag.member_id ?? bag.MEMBER_ID ?? (profile && profile.member_id);
     if (memberId != null) { bag.admin_link = adminPanelLink(memberId, isPROD); bag.recurly_link = recurlyLink(memberId, isPROD); }
     if (magic) bag.magic_link = magic.link || magic.magic_link || magic.url || null;
@@ -4306,11 +4311,12 @@ module.exports = {
     getAdminPanelLink,
     getRecurlyLink,
     setDomainStateReader,
-    validateSchema
+    validateSchema,
+    DEFAULT_PASSWORD
 }
 
 
-module.exports.__userscript = '1.3.2';
+module.exports.__userscript = '1.4.0';
 // page-attach.js — runs after the library populated module.exports (inside the injected page fn).
 // Exposes window.r4m (full export surface) and promotes getInfo + the listing helpers to bare
 // globals when the page hasn't claimed the name.
