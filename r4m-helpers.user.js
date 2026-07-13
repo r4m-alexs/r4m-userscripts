@@ -28,7 +28,7 @@
 // @connect     routeml.com
 // @connect     googleapis.com
 // @noframes
-// @version     1.3.0
+// @version     1.3.1
 // @author      -
 // ==/UserScript==
 
@@ -3572,8 +3572,9 @@ const _domainState = (url) => new Promise((resolve) => {
 
 // getInfo({query}) — query every valuable-info endpoint (v5 /profile-api, session validate,
 // v4 configuration-settings, magic-login), merge + compute fields (env, profile summary, admin_link,
-// recurly_link, magic_link, member_password, cookies, localstorage_keys), filter by the '|'-separated
-// regex `query`, and return aligned TSV ("key)\tvalue"). `env` and `profile` are always included.
+// recurly_link, magic_link, member_password, cookies, localstorage_keys) into one bag, filter the
+// bag's PROPERTY NAMES by the '|'-separated regex `query` (no query = everything; there are no
+// always-on keys), and return aligned TSV ("key)\tvalue").
 const _INFO_ORDER = ['env','member_id','member_email','profile','member_password','admin_link','recurly_link','qa_mode','member_api_key','magic_link','account_type_alias','READONLY_USER','member_type','OWNER_MEMBER_ID','ROOT_OWNER_MEMBER_ID','ROOT_OWNER_MEMBER_EMAIL','ROOT_OWNER_MEMBER_API_KEY','service_type','cookies','localstorage_keys'];
 const getInfo = async ({ query: q = '', api_key = null, env = null, log = true } = {}) => {
     let isPROD = resolveEnv(env);
@@ -3608,12 +3609,15 @@ const getInfo = async ({ query: q = '', api_key = null, env = null, log = true }
     if (memberId != null) { bag.admin_link = adminPanelLink(memberId, isPROD); bag.recurly_link = recurlyLink(memberId, isPROD); }
     if (magic) bag.magic_link = magic.link || magic.magic_link || magic.url || null;
 
-    let dom = await _domainState(pm.collectionVariables.get('baseUrl') || apiBase(isPROD));
-    bag.cookies = dom.cookies; bag.localstorage_keys = dom.localstorage_keys;
+    // cookies/localstorage_keys respect the query filter like everything else — only read the
+    // domain state when they'd be shown (no query, or the query matches them)
+    if (!patterns.length || match('cookies') || match('localstorage_keys')) {
+        let dom = await _domainState(pm.collectionVariables.get('baseUrl') || apiBase(isPROD));
+        bag.cookies = dom.cookies; bag.localstorage_keys = dom.localstorage_keys;
+    }
 
-    // filter: env/profile/cookies/localstorage_keys always; everything else must match the query
-    let always = new Set(['env', 'profile', 'cookies', 'localstorage_keys']);
-    let keep = Object.keys(bag).filter(k => always.has(k) || match(k));
+    // filter purely by property name: every gathered key must match the query (no query = all)
+    let keep = Object.keys(bag).filter(match);
     keep.sort((a, b) => {
         let ia = _INFO_ORDER.indexOf(a), ib = _INFO_ORDER.indexOf(b);
         if (ia === -1 && ib === -1) return a.localeCompare(b);
@@ -4265,7 +4269,7 @@ module.exports = {
 }
 
 
-module.exports.__userscript = '1.3.0';
+module.exports.__userscript = '1.3.1';
 // page-attach.js — runs after the library populated module.exports (inside the injected page fn).
 // Exposes window.r4m (full export surface) and promotes getInfo + the listing helpers to bare
 // globals when the page hasn't claimed the name.

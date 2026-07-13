@@ -76,6 +76,16 @@ const body = out.slice(out.indexOf('(function () {'));
     // cookies split into name:value pairs — first '=' only (values may embed '='), url-decoded
     assert.ok(info.includes('cookies)\t{session_id:abc123,jwt:eyJh.pay=load=,empty:}'), 'cookies string split properly: ' + (info.match(/^cookies\).*$/m) || [''])[0]);
 
+    // the query filters ALL property names uniformly — no always-on keys
+    const filtered = await window.getInfo({ query: 'member_id|member_api_key|member_email|qa_mode', log: false });
+    assert.ok(!/^cookies\)/m.test(filtered), 'filtered getInfo omits cookies');
+    assert.ok(!/^localstorage_keys\)/m.test(filtered), 'filtered getInfo omits localstorage_keys');
+    assert.ok(!/^env\)/m.test(filtered) && !/^profile\)/m.test(filtered), 'env/profile are filterable too (no always-on keys)');
+    assert.ok(/^member_email\)/m.test(filtered) && /^member_id\)/m.test(filtered), 'matched keys are kept');
+    const cookiesOnly = await window.getInfo({ query: 'cookies', log: false });
+    assert.ok(/^cookies\)/m.test(cookiesOnly), 'asking for cookies explicitly still returns them');
+    assert.ok(!/^member_email\)/m.test(cookiesOnly), 'and nothing unmatched comes with them');
+
     // --- transport & auth policy: GM_xmlhttpRequest with cookies, standalone api_key impossible --
     assert.ok(calls.length > 0, 'requests were made');
     for (const c of calls) {
