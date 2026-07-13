@@ -33,6 +33,8 @@ fallbacks.
 - Deploy: `npm run deploy:userscript` — rebuilds, runs the smoke test, then commits and pushes
   this directory (its own git repo) to `github.com/r4m-alexs/r4m-userscripts`. Bump `VERSION`
   in `build-userscript-r4m.js` when publishing a change.
+- This repo also hosts the Insomnia bundle (`r4m.bundle.js`, refreshed by the same deploy) —
+  `insomnia-r4m/loader.js` fetches it from the raw URL here.
 
 ## Auth & config
 
