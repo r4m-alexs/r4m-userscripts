@@ -1078,6 +1078,11 @@ let ENRICH_BY_DEFAULT = true;
 // with .silent() (suppress) / .loud(label). setFromAutolog(false) toggles it at runtime.
 let FROM_AUTOLOG = true;
 const setFromAutolog = (on) => { FROM_AUTOLOG = !!on; };
+// Timezone for enriched timestamp display. 'local' (default, machine zone) | 'utc' | a fixed offset
+// (minutes number or '+HH:mm' string). Set globally with setTimezone('utc'), or per-query via from().tz(...).
+let ENRICH_TZ = 'local';
+const setTimezone = (tz) => { ENRICH_TZ = (tz == null || tz === '') ? 'local' : tz; return ENRICH_TZ; };
+
 const from = (data) => {
     // Accepted inputs (in detection order):
     //   1. array of rows
@@ -1105,7 +1110,22 @@ const from = (data) => {
         console.warn('from(): unsupported data — expected array of objects, helper output {list}, raw response {items|data.items}, or object map; got ' + (data === null ? 'null' : typeof data));
     }
 
-    const get = (row, field) => _.get(row, field);
+    // path resolver: lodash _.get first; if that misses AND the path crosses an ARRAY, map over the
+    // items — so 'groups.key' on groups:[{key},...] returns ['Undefined','Acme',...] (works at any depth).
+    const get = (row, field) => {
+        let v = _.get(row, field);
+        if (v !== undefined) return v;
+        const walk = (val, segs) => {
+            if (!segs.length) return val;
+            if (val == null) return undefined;
+            if (Array.isArray(val)) {
+                let mapped = val.map(x => walk(x, segs)).filter(x => x !== undefined);
+                return mapped.length ? mapped : undefined;
+            }
+            return walk(val[segs[0]], segs.slice(1));
+        };
+        return walk(row, String(field).split('.').filter(Boolean));
+    };
 
     // --- value enrichment (humanize raw values by field name), opt-in via .enrich() ---
     const enrichDuration = (seconds) => {
@@ -1133,8 +1153,16 @@ const from = (data) => {
     // Plausible-timestamp window for VALUE-based detection: 2010-01-01 .. 2040-01-01 (unix seconds).
     // 10/13-digit numbers outside this window (e.g. big sequential ids) are left untouched.
     const TS_MIN = 1262304000, TS_MAX = 2208988800;
-    // local time with the REAL utc offset (the old format printed local time but mislabeled it GMT+0)
-    const tsReadable = (raw, ms) => `${raw} (${moment(ms).format("ddd MMM DD YYYY HH:mm:ss [GMT]ZZ")})`;
+    // Readable time in the configured zone: per-query .tz(...) overrides the global setTimezone().
+    // 'local' (machine zone) | 'utc' | fixed offset (minutes or '+HH:mm'). ZZ prints the actual offset.
+    const tsReadable = (raw, ms) => {
+        let z = state.tz != null ? state.tz : ENRICH_TZ;
+        let m;
+        if (z === 'utc' || z === 'UTC') m = moment.utc(ms);
+        else if (z === 'local' || z == null) m = moment(ms);
+        else { m = moment(ms); try { m.utcOffset(z); } catch (e) {} }   // fixed offset
+        return `${raw} (${m.format("ddd MMM DD YYYY HH:mm:ss [GMT]ZZ")})`;
+    };
 
     // Transform a single scalar value based on its field name — plus value-based timestamp
     // detection on ANY field: 1781202772 / 1781202772000 within the window become readable time.
@@ -1209,6 +1237,8 @@ const from = (data) => {
         wheres: [],
         lookups: [],       // [{leftKey, as, pick, fn}] — joins applied after WHERE
         extends: [],       // [{col: fn|'field'}] — computed columns, applied after lookups
+        unnests: [],       // array paths to explode into one row per item (also auto-detected from select)
+        tz: null,          // per-query timezone override for enriched timestamps ('utc'|'local'|offset)
         groupKeys: null,   // null | [string] | fn
         selectSpec: null,
         havingFn: null,
@@ -1283,9 +1313,24 @@ const from = (data) => {
         return (row) => checks.every(c => c(row));
     };
 
-    // Apply WHERE filters, LOOKUP joins, then EXTEND computed columns (shared by run() and stats()).
-    const applyWhereLookup = (rows) => {
+    // Explode rows on the given array paths (one row per item; the field becomes the single item).
+    const explode = (rows, paths) => {
         let out = rows;
+        for (let p of [...new Set(paths)]) {
+            out = out.flatMap(r => {
+                let arr = _.get(r, p);
+                if (!Array.isArray(arr)) return [r];
+                return arr.map(item => { let copy = JSON.parse(JSON.stringify(r)); _.set(copy, p, item); return copy; });
+            });
+        }
+        return out;
+    };
+
+    // UNNEST (explicit, SQL-lateral style: first) -> WHERE -> LOOKUP joins -> EXTEND computed columns.
+    // Explicit .unnest() runs BEFORE where/lookup so filters and joins see one row per item
+    // (e.g. .unnest('groups').lookup({on:'groups.key',...})). Shared by run() and stats().
+    const applyWhereLookup = (rows) => {
+        let out = state.unnests.length ? explode(rows, state.unnests) : rows;
         for (let w of state.wheres) out = out.filter(w);
         if (state.lookups.length) {
             out = out.map(row => {
@@ -1311,6 +1356,24 @@ const from = (data) => {
 
     const run = () => {
         let out = applyWhereLookup(state.rows);
+
+        // AUTO-UNNEST — string select paths that cross an array explode into one row per item
+        // (select('groups.key') -> one row per group). Explicit .unnest() already ran in applyWhereLookup.
+        if (state.selectSpec && out.length) {
+            let auto = [];
+            let sample = out.find(r => r && typeof r === 'object');
+            if (sample) for (let sp of Object.values(state.selectSpec)) {
+                if (typeof sp !== 'string' || isAggSpec(sp)) continue;
+                let segs = String(sp).split('.'), prefix = [];
+                for (let s of segs.slice(0, -1)) {          // never unnest on the leaf segment itself
+                    prefix.push(s);
+                    let v = _.get(sample, prefix.join('.'));
+                    if (Array.isArray(v)) { auto.push(prefix.join('.')); break; }
+                    if (v === undefined) break;
+                }
+            }
+            if (auto.length) out = explode(out, auto);
+        }
 
         // GROUP BY + SELECT
         if (state.groupKeys) {
@@ -1363,6 +1426,11 @@ const from = (data) => {
                     }
                     return resultRow;
                 });
+                // a selected column that resolved to nothing on EVERY row is almost always a path typo
+                // (e.g. select('customer.name') after lookup({pick:'name'}) — the column is already the name)
+                if (out.length) for (let [alias] of entries) {
+                    if (out.every(r => r[alias] === undefined)) console.warn("select: '" + alias + "' matched nothing on all " + out.length + ' rows — check the path (it will be missing from csv output)');
+                }
             }
         }
 
@@ -1457,6 +1525,9 @@ const from = (data) => {
             return api;
         },
         groupBy(keys) { return api.group(keys); },   // alias
+        // Explode rows on an array field: .unnest('groups') -> one row per groups[] item (the field
+        // becomes the single item). Happens automatically for string select paths crossing an array.
+        unnest(path) { if (path) state.unnests.push(String(path)); return api; },
         select(spec) {
             // 'a,b,c' or ['a','b'] -> identity projection map; object -> spec as-is
             if (typeof spec === 'string') spec = spec.split(',').map(f => f.trim()).filter(Boolean);
@@ -1490,6 +1561,8 @@ const from = (data) => {
         // --- console control (chainable) ---
         // Terminals auto-print by default. .silent() suppresses for this query; .loud(label) forces on.
         silent() { state.log = false; return api; },
+        // Timezone for enriched timestamps in THIS query: .tz('utc') | .tz('local') | .tz('+03:00') | .tz(180).
+        tz(zone) { state.tz = (zone == null || zone === '') ? 'local' : zone; return api; },
         loud(label) { state.log = true; if (label) state.logLabel = label; return api; },
 
         // --- terminals (return data, end the chain — and print it unless silenced) ---
@@ -3619,8 +3692,9 @@ const _domainState = (url) => new Promise((resolve) => {
 // aligned TSV ("key)\tvalue").
 const _INFO_ORDER = ['env','member_id','member_email','profile','member_password','admin_link','recurly_link','qa_mode','member_api_key','magic_link','account_type_alias','READONLY_USER','member_type','OWNER_MEMBER_ID','ROOT_OWNER_MEMBER_ID','ROOT_OWNER_MEMBER_EMAIL','ROOT_OWNER_MEMBER_API_KEY','service_type','cookies','localstorage_keys'];
 // The standard QA password accounts are provisioned with (see create-account.postman.js).
-// getInfo reports it as member_password when no endpoint returned one.
-const DEFAULT_PASSWORD = 'Pmv7B7yY#';
+// getInfo reports it as member_password when no endpoint returned one. NOT hardcoded — set it in a
+// collection/environment variable `qa-password` (kept out of source/git). Empty if unset.
+const DEFAULT_PASSWORD = (() => { try { return _cvStr('qa-password') || pm.environment.get('qa-password') || ''; } catch (e) { return ''; } })();
 const getInfo = async ({ query: q = '', api_key = null, env = null, log = true } = {}) => {
     let isPROD = resolveEnv(env);
     api_key = await resolveApiKey(api_key, env);
@@ -4311,6 +4385,7 @@ module.exports = {
     getAdminPanelLink,
     getRecurlyLink,
     setDomainStateReader,
+    setTimezone,
     validateSchema,
     DEFAULT_PASSWORD
 }

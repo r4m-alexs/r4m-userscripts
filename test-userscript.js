@@ -48,6 +48,11 @@ global.GM_xmlhttpRequest = (req) => {
     }), 0);
 };
 
+// qa-password is no longer hardcoded — it comes from the `qa-password` env var. Seed a throwaway
+// TEST value (NOT the real QA password) before load so DEFAULT_PASSWORD resolves to it.
+const QA_PW = 'test-qa-pw';
+global.localStorage.setItem('r4m.env', JSON.stringify({ 'qa-password': QA_PW }));
+
 // --- run the userscript body (metadata stripped) ---------------------------------------------
 const out = fs.readFileSync(path.join(__dirname, 'r4m-helpers.user.js'), 'utf8');
 const body = out.slice(out.indexOf('(function () {'));
@@ -73,8 +78,8 @@ const body = out.slice(out.indexOf('(function () {'));
     assert.ok(/^env\)\tSTAGING/m.test(info), 'getInfo reports env');
     assert.ok(/member_email\)\tqa@route4me\.com/.test(info), 'getInfo merged profile fields');
     assert.ok(/admin_link\)\thttps:\/\/root\.admin-panel\.routeml\.com/.test(info), 'getInfo computed admin_link');
-    assert.ok(/member_password\)\tPmv7B7yY#/.test(info), 'getInfo defaults member_password to the standard QA password');
-    assert.strictEqual(window.r4m.DEFAULT_PASSWORD, 'Pmv7B7yY#', 'DEFAULT_PASSWORD exported');
+    assert.ok(new RegExp('member_password\\)\\t' + QA_PW).test(info), 'getInfo defaults member_password to the configured qa-password');
+    assert.strictEqual(window.r4m.DEFAULT_PASSWORD, QA_PW, 'DEFAULT_PASSWORD resolves from the qa-password env var');
     // cookies split into name:value pairs — first '=' only (values may embed '='), url-decoded
     assert.ok(info.includes('cookies)\t{session_id:abc123,jwt:eyJh.pay=load=,empty:,XSRF-TOKEN:xsrf=tok123}'), 'cookies string split properly: ' + (info.match(/^cookies\).*$/m) || [''])[0]);
 
